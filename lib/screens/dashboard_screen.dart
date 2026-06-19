@@ -4,7 +4,7 @@ import '../data/local_user_store.dart';
 import '../data/local_calorie_store.dart';
 import '../data/local_post_store.dart';
 import 'activity_log_screen.dart';
-import 'calorie_counter_screen.dart';
+import '../features/caloriecounter/screens/calorie_counter_screen.dart';
 import 'create_post_screen.dart';
 import 'fitness_buddy_screen.dart';
 import 'profile_screen.dart';

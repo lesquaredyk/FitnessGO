@@ -4,7 +4,7 @@ import 'screens/welcome_screen.dart';
 import 'screens/role_screen.dart';
 import 'features/auth/screens/login/login_screen.dart';
 import 'screens/dashboard_screen.dart';
-import 'screens/calorie_counter_screen.dart';
+import 'features/caloriecounter/screens/calorie_counter_screen.dart';
 import 'screens/fitness_buddy_screen.dart';
 import 'screens/activity_log_screen.dart';
 import 'screens/wellness_hub_screen.dart';

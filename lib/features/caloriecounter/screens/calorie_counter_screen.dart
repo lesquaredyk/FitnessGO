@@ -2,10 +2,10 @@
 
 import 'package:flutter/material.dart';
 
-import '../features/caloriecounter/data/calorie_counter_api.dart';
-import '../core/storage/api_session_store.dart';
-import '../core/network/api_client.dart';
-import 'dashboard_screen.dart';
+import '../data/calorie_counter_api.dart';
+import '../../../core/storage/api_session_store.dart';
+import '../../../core/network/api_client.dart';
+import '../../../screens/dashboard_screen.dart';
 
 class CalorieCounterScreen extends StatefulWidget {
   static const routeName = '/calorie-counter';
