@@ -13,6 +13,9 @@ import 'wellness_hub_screen.dart';
 import '../features/auth/screens/login/login_screen.dart';
 
 import '../widgets/profile_photo_avatar.dart';
+import '../core/storage/api_session_store.dart';
+import '../core/network/api_client.dart';
+import '../features/caloriecounter/data/calorie_counter_api.dart';
 class DashboardScreen extends StatefulWidget {
   static const routeName = '/dashboard';
 
@@ -23,7 +26,16 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  Future<void> openCreatePost() async {
+    double dashboardCalorieIntake = 0.0;
+  double dashboardRemainingCalories = 0.0;
+  int dashboardDailyGoal = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    loadDashboardCalories();
+  }
+Future<void> openCreatePost() async {
     final result = await Navigator.pushNamed(
       context,
       CreatePostScreen.routeName,
@@ -222,30 +234,121 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget buildCalorieBoxes() {
-    final remaining = LocalCalorieStore.remainingCalories;
+  int extractDashboardDailyGoal(Map<String, dynamic> result) {
+    final roots = [
+      result,
+      result['data'],
+      result['profile'],
+      result['user'],
+    ];
 
-    return Row(
-      children: [
-        Expanded(
-          child: buildCalorieBox(
-            icon: Icons.restaurant_rounded,
-            title: 'Calorie Intake',
-            value: '${LocalCalorieStore.totalIntake} kcal',
-          ),
-        ),
-        const SizedBox(width: 14),
-        Expanded(
-          child: buildCalorieBox(
-            icon: remaining < 0 ? Icons.warning_rounded : Icons.flag_rounded,
-            title: remaining < 0 ? 'Over Goal' : 'Calorie Remaining',
-            value: '${remaining.abs()} kcal',
-          ),
-        ),
-      ],
-    );
+    for (final root in roots) {
+      if (root is Map) {
+        final parsed = CalorieCounterApi.asInt(
+          root['DailyNetGoal'] ??
+              root['dailyNetGoal'] ??
+              root['daily_goal'] ??
+              root['dailyGoal'] ??
+              root['DailyGoal'],
+        );
+
+        if (parsed > 0) return parsed;
+      }
+    }
+
+    return 0;
   }
 
+  Future<void> loadDashboardCalories() async {
+    try {
+      final userId = await ApiSessionStore.getUserId();
+
+      if (userId <= 0) return;
+
+      int loadedDailyGoal = dashboardDailyGoal;
+
+      try {
+        final profileResult = await ApiClient.get('/profile/$userId');
+        final parsedGoal = extractDashboardDailyGoal(profileResult);
+
+        if (parsedGoal > 0) {
+          loadedDailyGoal = parsedGoal;
+        }
+      } catch (_) {
+        // Keep fallback below.
+      }
+
+      if (loadedDailyGoal <= 0) {
+        loadedDailyGoal = 2000;
+      }
+
+      final today = DateTime.now().toIso8601String().split('T').first;
+
+      final result = await CalorieCounterApi.getFoodsByUserAndDate(
+        userId: userId,
+        logDate: today,
+      );
+
+      final rawFoods = result['foods'] ?? result['data'] ?? [];
+      final logs = <Map<String, dynamic>>[];
+
+      if (rawFoods is List) {
+        for (final item in rawFoods) {
+          if (item is Map) {
+            logs.add(Map<String, dynamic>.from(item));
+          }
+        }
+      }
+
+      final total = logs.fold<double>(
+        0.0,
+        (sum, item) =>
+            sum +
+            CalorieCounterApi.asDouble(
+              item['Calories'] ?? item['calories'] ?? item['kcal'] ?? 0,
+            ),
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        dashboardDailyGoal = loadedDailyGoal;
+        dashboardCalorieIntake = total;
+        dashboardRemainingCalories = loadedDailyGoal.toDouble() - total;
+      });
+    } catch (_) {
+      // Keep dashboard visible even if calories fail to load.
+    }
+  }
+  Widget buildCalorieBoxes() {
+  final intake = dashboardCalorieIntake;
+  final remaining = dashboardRemainingCalories;
+
+  final displayedIntake = intake.round();
+  final displayedRemaining = remaining < 0
+      ? remaining.abs().round()
+      : remaining.round();
+
+  return Row(
+    children: [
+      Expanded(
+        child: buildCalorieBox(
+          icon: Icons.restaurant_rounded,
+          title: 'Calorie Intake',
+          value: '$displayedIntake kcal',
+        ),
+      ),
+      const SizedBox(width: 14),
+      Expanded(
+        child: buildCalorieBox(
+          icon: remaining < 0 ? Icons.warning_rounded : Icons.flag_rounded,
+          title: remaining < 0 ? 'Calorie Goal Exceeded' : 'Remaining Calories',
+          value: '$displayedRemaining kcal',
+        ),
+      ),
+    ],
+  );
+}
   Widget buildCalorieBox({
     required IconData icon,
     required String title,
@@ -695,6 +798,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 }
+
+
 
 
 

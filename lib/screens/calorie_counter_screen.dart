@@ -1,7 +1,10 @@
-﻿import 'package:flutter/material.dart';
+﻿import 'dart:async';
 
-import '../data/filipino_food_database.dart';
-import '../data/local_calorie_store.dart';
+import 'package:flutter/material.dart';
+
+import '../features/caloriecounter/data/calorie_counter_api.dart';
+import '../core/storage/api_session_store.dart';
+import '../core/network/api_client.dart';
 import 'dashboard_screen.dart';
 
 class CalorieCounterScreen extends StatefulWidget {
@@ -18,8 +21,16 @@ class _CalorieCounterScreenState extends State<CalorieCounterScreen> {
   final quantityController = TextEditingController();
 
   String selectedMeal = 'Breakfast';
-  int calculatedCalories = 0;
-  FoodItem? selectedFood;
+  double calculatedCalories = 0;
+  int dailyGoal = 0;
+  double calorieIntake = 0.0;
+  double calorieLeft = 0.0;
+  List<Map<String, dynamic>> foodLogs = [];
+@override
+  void initState() {
+    super.initState();
+    loadFoodData();
+  }
 
   @override
   void dispose() {
@@ -29,89 +40,268 @@ class _CalorieCounterScreenState extends State<CalorieCounterScreen> {
   }
 
   void recalculateCalories() {
-    final foodName = foodController.text.trim();
-    final quantity = double.tryParse(quantityController.text.trim()) ?? 0;
-    final food = FilipinoFoodDatabase.findByName(foodName);
-
     setState(() {
-      selectedFood = food;
-
-      if (food == null || quantity <= 0) {
-        calculatedCalories = 0;
-        return;
-      }
-
-      calculatedCalories =
-          ((food.calories / food.servingSizeG) * quantity).round();
+      calculatedCalories = 0;
     });
   }
-  void getCalories() {
+
+  Future<void> getCalories({bool showErrors = true}) async {
     final foodName = foodController.text.trim();
     final quantity = double.tryParse(quantityController.text.trim()) ?? 0;
 
-    final food = FilipinoFoodDatabase.findByName(foodName);
-
-    if (food == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Food not found. Choose a food from the suggestions.'),
-          backgroundColor: Colors.red,
-        ),
-      );
+    if (foodName.isEmpty) {
+      if (showErrors) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Enter a food name.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
       return;
     }
 
     if (quantity <= 0) {
+      if (showErrors) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Enter a valid food quantity in grams.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+
+    try {
+      final result = await CalorieCounterApi.calculateCalories(
+        foodName: foodName,
+        foodQuantity: quantity,
+      );
+
+      final calories = CalorieCounterApi.asDouble(
+        result['Calories'] ?? result['calories'] ?? result['kcal'] ?? 0,
+      );
+
+      if (!mounted) return;
+
+      if (calories <= 0) {
+        if (showErrors) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Unable to calculate calories for this food.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+
+      setState(() {
+        calculatedCalories = calories;
+      });
+    } catch (e) {
+      if (!mounted || !showErrors) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to calculate calories: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> saveCalories() async {
+    final foodName = foodController.text.trim();
+    final quantity = double.tryParse(quantityController.text.trim()) ?? 0;
+
+    if (foodName.isEmpty || quantity <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Enter a valid food quantity in grams.'),
+          content: Text('Enter food name and quantity first.'),
           backgroundColor: Colors.red,
         ),
       );
       return;
     }
 
-    setState(() {
-      selectedFood = food;
-      calculatedCalories = ((food.calories / food.servingSizeG) * quantity).round();
-    });
-  }
+    if (calculatedCalories <= 0) {
+      await getCalories(showErrors: true);
+    }
 
-  void saveCalories() {
-    if (calculatedCalories <= 0 || selectedFood == null) {
+    if (calculatedCalories <= 0) return;
+
+    final projectedLeft = dailyGoal - (calorieIntake + calculatedCalories);
+    final willExceedForFirstTime =
+        dailyGoal > 0 && calorieLeft >= 0 && projectedLeft < 0;
+
+    try {
+      final userId = await ApiSessionStore.getUserId();
+
+      if (userId <= 0) {
+        throw Exception('User is not logged in.');
+      }
+
+      await CalorieCounterApi.createFood(
+        userId: userId,
+        foodName: foodName,
+        foodQuantity: quantity,
+        mealCategory: selectedMeal,
+        calories: calculatedCalories.toDouble(),
+      );
+
+      setState(() {
+        foodController.clear();
+        quantityController.clear();
+        calculatedCalories = 0;
+      });
+
+      await loadFoodData();
+
+      if (willExceedForFirstTime && mounted) {
+        await showDialog<void>(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              title: const Text('Calorie Goal Notice'),
+              content: Text(
+                'Saving this food will exceed your daily calorie goal.\n\n'
+                'This is allowed, but please be mindful of your intake.\n\n'
+                'Remaining Calories: ${projectedLeft.toStringAsFixed(2)} kcal',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(context);
+                  },
+                  child: const Text('OK'),
+                ),
+              ],
+            );
+          },
+        );
+      }
+
+      if (!mounted) return;
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Tap Get Calories first before saving.'),
+          content: Text('Calories saved.'),
+          backgroundColor: Color(0xFF008000),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to save calories: $e'),
           backgroundColor: Colors.red,
         ),
       );
-      return;
     }
-
-    LocalCalorieStore.addEntry(
-      food: '${selectedFood!.name} • $selectedMeal',
-      calories: calculatedCalories,
-    );
-
-    setState(() {
-      foodController.clear();
-      quantityController.clear();
-      selectedFood = null;
-      calculatedCalories = 0;
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Calories saved.'),
-        backgroundColor: Color(0xFF008000),
-      ),
-    );
   }
 
+
+  int extractDailyGoal(Map<String, dynamic> result) {
+    final roots = [
+      result,
+      result['data'],
+      result['profile'],
+      result['user'],
+    ];
+
+    for (final root in roots) {
+      if (root is Map) {
+        final parsed = CalorieCounterApi.asInt(
+          root['DailyNetGoal'] ??
+              root['dailyNetGoal'] ??
+              root['daily_goal'] ??
+              root['dailyGoal'] ??
+              root['DailyGoal'],
+        );
+
+        if (parsed > 0) return parsed;
+      }
+    }
+
+    return 0;
+  }
+
+  Future<void> loadFoodData() async {
+    try {
+      final userId = await ApiSessionStore.getUserId();
+
+      if (userId <= 0) return;
+
+      int loadedDailyGoal = dailyGoal;
+
+      try {
+        final profileResult = await ApiClient.get('/profile/$userId');
+        final parsedGoal = extractDailyGoal(profileResult);
+
+        if (parsedGoal > 0) {
+          loadedDailyGoal = parsedGoal;
+        }
+      } catch (_) {
+        // Keep fallback below.
+      }
+
+      if (loadedDailyGoal <= 0) {
+        loadedDailyGoal = 2000;
+      }
+
+      final today = DateTime.now().toIso8601String().split('T').first;
+
+      final result = await CalorieCounterApi.getFoodsByUserAndDate(
+        userId: userId,
+        logDate: today,
+      );
+
+      final rawFoods = result['foods'] ?? result['data'] ?? [];
+      final logs = <Map<String, dynamic>>[];
+
+      if (rawFoods is List) {
+        for (final item in rawFoods) {
+          if (item is Map) {
+            logs.add(Map<String, dynamic>.from(item));
+          }
+        }
+      }
+
+      final total = logs.fold<double>(
+        0.0,
+        (sum, item) =>
+            sum +
+            CalorieCounterApi.asDouble(
+              item['Calories'] ?? item['calories'] ?? item['kcal'] ?? 0,
+            ),
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        dailyGoal = loadedDailyGoal;
+        foodLogs = logs;
+        calorieIntake = total;
+        calorieLeft = loadedDailyGoal.toDouble() - total;
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to load food logs: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
   @override
   Widget build(BuildContext context) {
-    final intake = LocalCalorieStore.totalIntake;
-    final left = LocalCalorieStore.remainingCalories;
+    final intake = calorieIntake;
+    final left = calorieLeft;
 
     return Scaffold(
       backgroundColor: const Color(0xFFFAFBF8),
@@ -199,7 +389,7 @@ class _CalorieCounterScreenState extends State<CalorieCounterScreen> {
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  'Daily Goal • ${LocalCalorieStore.dailyGoal} kcal',
+                  'Daily Goal • $dailyGoal kcal',
                   style: const TextStyle(
                     color: Color(0xFF2B5F35),
                     fontSize: 13,
@@ -213,27 +403,32 @@ class _CalorieCounterScreenState extends State<CalorieCounterScreen> {
       ),
     );
   }
-  Widget buildSummaryRow(int intake, int left) {
-    return Row(
-      children: [
-        Expanded(
-          child: buildSummaryBox(
-            title: 'Calorie Intake',
-            value: '$intake',
-            icon: Icons.restaurant_menu_rounded,
-          ),
+  Widget buildSummaryRow(double intake, double left) {
+  final displayedIntake = intake.round().toString();
+  final displayedLeft = left < 0
+      ? left.abs().round().toString()
+      : left.round().toString();
+
+  return Row(
+    children: [
+      Expanded(
+        child: buildSummaryBox(
+          title: 'Calorie Intake',
+          value: displayedIntake,
+          icon: Icons.restaurant_menu_rounded,
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: buildSummaryBox(
-            title: left < 0 ? 'Over Goal' : 'Calorie Remaining',
-            value: '${left.abs()}',
-            icon: left < 0 ? Icons.warning_rounded : Icons.flag_rounded,
-          ),
+      ),
+      const SizedBox(width: 12),
+      Expanded(
+        child: buildSummaryBox(
+          title: left < 0 ? 'Calorie Goal Exceeded' : 'Remaining Calories',
+          value: displayedLeft,
+          icon: left < 0 ? Icons.warning_rounded : Icons.flag_rounded,
         ),
-      ],
-    );
-  }
+      ),
+    ],
+  );
+}
 
   Widget buildSummaryBox({
     required String title,
@@ -336,6 +531,18 @@ class _CalorieCounterScreenState extends State<CalorieCounterScreen> {
             ],
           ),
           const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: buildActionButton(
+              text: 'Get Calories',
+              icon: Icons.local_fire_department_rounded,
+              light: true,
+              onTap: () {
+                getCalories();
+              },
+            ),
+          ),
+          const SizedBox(height: 14),
           buildLabel('Food Calorie'),
           buildCalorieResult(),
           const SizedBox(height: 15),
@@ -368,45 +575,15 @@ class _CalorieCounterScreenState extends State<CalorieCounterScreen> {
   }
 
   Widget buildFoodAutocomplete() {
-    return Autocomplete<FoodItem>(
-      displayStringForOption: (item) => item.name,
-      optionsBuilder: (textEditingValue) {
-        final query = textEditingValue.text.toLowerCase();
-
-        if (query.isEmpty) {
-          return FilipinoFoodDatabase.items.take(8);
-        }
-
-        return FilipinoFoodDatabase.items.where(
-          (item) => item.name.toLowerCase().contains(query),
-        );
-      },
-      onSelected: (item) {
-        foodController.text = item.name;
-        selectedFood = item;
+    return TextField(
+      controller: foodController,
+      onChanged: (_) {
         recalculateCalories();
       },
-      fieldViewBuilder: (
-        context,
-        controller,
-        focusNode,
-        onFieldSubmitted,
-      ) {
-        foodController.text = controller.text;
-
-        return TextField(
-          controller: controller,
-          focusNode: focusNode,
-          onChanged: (value) {
-            foodController.text = value;
-            recalculateCalories();
-          },
-          decoration: inputDecoration(
-            hint: 'Search Filipino food',
-            icon: Icons.fastfood_rounded,
-          ),
-        );
-      },
+      decoration: inputDecoration(
+        hint: 'Enter food name',
+        icon: Icons.fastfood_rounded,
+      ),
     );
   }
 
@@ -458,7 +635,9 @@ class _CalorieCounterScreenState extends State<CalorieCounterScreen> {
       child: Align(
         alignment: Alignment.centerLeft,
         child: Text(
-          calculatedCalories <= 0 ? '0 kcal' : '$calculatedCalories kcal',
+          calculatedCalories <= 0
+    ? '0 kcal'
+    : '${calculatedCalories.toStringAsFixed(2)} kcal',
           style: const TextStyle(
             color: Color(0xFF008000),
             fontSize: 18,
@@ -528,7 +707,7 @@ class _CalorieCounterScreenState extends State<CalorieCounterScreen> {
   }
 
   Widget buildRecentLog() {
-    final entries = LocalCalorieStore.entries;
+    final entries = foodLogs;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -560,8 +739,20 @@ class _CalorieCounterScreenState extends State<CalorieCounterScreen> {
             ),
           )
         else
-          ...entries.map(
-            (entry) => Container(
+          ...entries.map((entry) {
+            final foodName = CalorieCounterApi.asString(
+              entry['FoodName'] ?? entry['food_name'] ?? entry['food'] ?? '',
+            );
+
+            final meal = CalorieCounterApi.asString(
+              entry['MealCategory'] ?? entry['meal_category'] ?? '',
+            );
+
+            final calories = CalorieCounterApi.asDouble(
+              entry['Calories'] ?? entry['calories'] ?? entry['kcal'] ?? 0,
+            );
+
+            return Container(
               margin: const EdgeInsets.only(bottom: 10),
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
@@ -578,14 +769,14 @@ class _CalorieCounterScreenState extends State<CalorieCounterScreen> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      entry['food'] ?? '',
+                      meal.isEmpty ? foodName : '$foodName - $meal',
                       style: const TextStyle(
                         fontWeight: FontWeight.w900,
                       ),
                     ),
                   ),
                   Text(
-                    '${entry['calories']} kcal',
+                    '${calories.toStringAsFixed(2)} kcal',
                     style: const TextStyle(
                       color: Color(0xFF008000),
                       fontWeight: FontWeight.w900,
@@ -593,19 +784,12 @@ class _CalorieCounterScreenState extends State<CalorieCounterScreen> {
                   ),
                 ],
               ),
-            ),
-          ),
+            );
+          }),
       ],
     );
   }
 }
-
-
-
-
-
-
-
 
 
 
