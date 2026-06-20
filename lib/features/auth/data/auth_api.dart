@@ -11,6 +11,16 @@ class AuthApi {
     );
   }
 
+  static Future<Map<String, dynamic>> requestSignupOtp({
+    required String username,
+    required String email,
+  }) {
+    return ApiClient.post(
+      '/auth/request-signup-otp',
+      body: {'Username': username, 'Email': email},
+    );
+  }
+
   static Future<Map<String, dynamic>> register({
     required String username,
     required String email,
@@ -25,6 +35,7 @@ class AuthApi {
     double? desiredWeight,
     required String hasHealthConditions,
     String? whatHealthConditions,
+    required String otp,
   }) {
     return ApiClient.post(
       '/auth/register',
@@ -42,7 +53,28 @@ class AuthApi {
         'DesiredWeight': desiredWeight,
         'HasHealthConditions': hasHealthConditions,
         'WhatHealthConditions': whatHealthConditions,
+        'Otp': otp,
       },
+    );
+  }
+
+  static Future<Map<String, dynamic>> requestPasswordResetOtp({
+    required String email,
+  }) {
+    return ApiClient.post(
+      '/auth/request-password-reset-otp',
+      body: {'Email': email},
+    );
+  }
+
+  static Future<Map<String, dynamic>> resetPassword({
+    required String email,
+    required String otp,
+    required String newPassword,
+  }) {
+    return ApiClient.post(
+      '/auth/reset-password',
+      body: {'Email': email, 'Otp': otp, 'NewPassword': newPassword},
     );
   }
 
